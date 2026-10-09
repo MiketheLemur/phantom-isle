@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phantom Isle — a surveyor of islands that aren't there</title>
+<style>
+  :root { --ink:#3d2f1e; --parchment:#efe3c6; --accent:#7a5c33; }
+  body { background:#14100a; color:#e8dcc0; font-family:Georgia,'Times New Roman',serif; margin:0; padding:24px; }
+  .wrap { max-width:1180px; margin:0 auto; }
+  h1 { font-style:italic; font-weight:normal; font-size:34px; margin:0 0 4px; letter-spacing:1px; }
+  .sub { color:#b9a87f; margin:0 0 18px; font-style:italic; }
+  .lede { max-width:70ch; line-height:1.55; color:#d8c9a3; }
+  .lede em { color:#f0e2bd; }
+  .controls { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:18px 0; }
+  .controls input[type=text] { background:#241c10; border:1px solid var(--accent); color:#e8dcc0;
+    font-family:inherit; padding:7px 10px; width:130px; }
+  button { background:#2c2212; border:1px solid var(--accent); color:#e8dcc0; font-family:inherit;
+    padding:8px 14px; cursor:pointer; font-style:italic; }
+  button:hover { background:#3d2f1a; }
+  label.chk { color:#b9a87f; font-style:italic; font-size:14px; }
+  .main { display:flex; gap:24px; flex-wrap:wrap; align-items:flex-start; }
+  canvas { background:var(--parchment); border:1px solid #6b543a; max-width:100%; height:auto; }
+  .side { flex:1; min-width:300px; max-width:430px; }
+  .side h2 { font-weight:normal; font-style:italic; font-size:20px; border-bottom:1px solid #4a3a22;
+    padding-bottom:4px; margin:22px 0 10px; color:#e8dcc0; }
+  .side h2:first-child { margin-top:0; }
+  dl.part { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:15px; margin:0; }
+  dl.part dt { color:#b9a87f; font-style:italic; }
+  dl.part dd { margin:0; }
+  .fauna li, .notes li, .hist li { margin-bottom:10px; line-height:1.5; font-size:15px; }
+  .fauna, .notes, .hist { padding-left:20px; margin:0; }
+  .sci { font-style:italic; }
+  .status { color:#b9a87f; font-size:13px; font-style:italic; }
+  .notedate { color:#b9a87f; font-style:italic; }
+  footer { margin-top:28px; color:#8a774f; font-style:italic; font-size:14px; border-top:1px solid #2c2212; padding-top:12px; }
+  a { color:#d8b96a; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Phantom Isle</h1>
+  <p class="sub">a surveyor of islands that aren't there</p>
+  <p class="lede">Every age of navigation kept a private list of islands that appeared on charts and
+  refused to appear at sea — <em>Hy-Brasil, Antillia, Frisland</em>, whole archipelagos of maybe.
+  This machine continues the tradition. Give it a seed and it will survey an island for you:
+  soundings, rivers, endemic fauna, the field notes of men who may have dreamed it, and the
+  expedition history of everyone who went looking. <em>The seed is the island.</em> Share a seed
+  and you share the island — #seed= in the address bar.</p>
+
+  <div class="controls">
+    <input type="text" id="seedInput" placeholder="seed">
+    <button id="newIsle">Survey new island</button>
+    <button id="resurvey">Re-survey fauna</button>
+    <label class="chk"><input type="checkbox" id="tglLabels" checked> sightings</label>
+    <label class="chk"><input type="checkbox" id="tglGrat" checked> graticule</label>
+    <button id="savePng">Save chart (PNG)</button>
+  </div>
+
+  <div class="main">
+    <canvas id="chart" width="700" height="700"></canvas>
+    <div class="side" id="side"></div>
+  </div>
+
+  <footer>Built by Mike — a lemur in hyperspace. New machine every Friday.
+  Islands generated in-browser from a seeded PRNG; no two seeds share an island, and no island shares the sea.</footer>
+</div>
+
+<script src="isle.js"></script>
+<script>
+(function () {
+'use strict';
+var N = PhantomIsle.GRID;
+var canvas = document.getElementById('chart');
+var ctx = canvas.getContext('2d');
+var INK = '#3d2f1e';
+
+var BIOMES = {
+  peak:        '#9a9184',
+  cloudforest: '#5c7a4e',
+  highland:    '#8a9a5e',
+  forest:      '#6f8f52',
+  littoral:    '#a8a06a',
+  thicket:     '#9c8a55',
+  mangrove:    '#4a6b46'
+};
+
+function shade(hex, amt) {
+  var n = parseInt(hex.slice(1), 16);
+  var r = Math.min(255, Math.max(0, (n >> 16) + amt));
+  var g = Math.min(255, Math.max(0, ((n >> 8) & 255) + amt));
+  var b = Math.min(255, Math.max(0, (n & 255) + amt));
+  return 'rgb(' + r + ',' + g + ',' + b + ')';
+}
+
+var mapX = 34, mapY = 96, mapS = 600;
+var cell = mapS / (N - 1);
+function X(gx) { return mapX + gx * cell; }
+function Y(gy) { return mapY + gy * cell; }
+
+var state = { survey: null, showLabels: true, showGrat: true, faunaEpoch: 0 };
+
+function contour(cells, level, style, width) {
+  ctx.strokeStyle = style; ctx.lineWidth = width; ctx.beginPath();
+  for (var y = 0; y < N - 1; y++) for (var x = 0; x < N - 1; x++) {
+    var h = [cells[y][x].h, cells[y][x + 1].h, cells[y + 1][x + 1].h, cells[y + 1][x].h];
+    var idx = (h[0] > level ? 8 : 0) | (h[1] > level ? 4 : 0) | (h[2] > level ? 2 : 0) | (h[3] > level ? 1 : 0);
+    if (idx === 0 || idx === 15) continue;
+    var T = edge(x, y, x + 1, y, h[0], h[1], level), R = edge(x + 1, y, x + 1, y + 1, h[1], h[2], level);
+    var B = edge(x, y + 1, x + 1, y + 1, h[3], h[2], level), L = edge(x, y, x, y + 1, h[0], h[3], level);
+    switch (idx) {
+      case 1: case 14: seg(L, B); break;
+      case 2: case 13: seg(B, R); break;
+      case 3: case 12: seg(L, R); break;
+      case 4: case 11: seg(T, R); break;
+      case 5: seg(T, L); seg(B, R); break;
+      case 6: case 9: seg(T, B); break;
+      case 7: case 8: seg(T, L); break;
+      case 10: seg(T, R); seg(L, B); break;
+    }
+  }
+  ctx.stroke();
+  function edge(ax, ay, bx, by, ha, hb, level) {
+    var t = (level - ha) / (hb - ha);
+    t = Math.min(Math.max(t, 0), 1);
+    return [ax + (bx - ax) * t, ay + (by - ay) * t];
+  }
+  function seg(p, q) { ctx.moveTo(X(p[0]), Y(p[1])); ctx.lineTo(X(q[0]), Y(q[1])); }
+}
+
+function drawChart(sv) {
+  var isl = sv.island, cells = isl.cells;
+  ctx.clearRect(0, 0, 700, 700);
+  ctx.fillStyle = '#efe3c6'; ctx.fillRect(0, 0, 700, 700);
+
+  /* ocean + bathymetry wash */
+  var x, y;
+  for (y = 0; y < N; y++) for (x = 0; x < N; x++) {
+    var c = cells[y][x];
+    if (c.land) continue;
+    var depth = 0.5 - c.h;
+    var a = Math.min(0.42, depth * 1.5);
+    if (a <= 0.01) continue;
+    ctx.fillStyle = 'rgba(110,150,168,' + a.toFixed(3) + ')';
+    ctx.fillRect(X(x) - cell / 2, Y(y) - cell / 2, cell + 0.5, cell + 0.5);
+  }
+
+  /* reef stipple */
+  ctx.fillStyle = 'rgba(61,47,30,0.5)';
+  for (y = 0; y < N; y++) for (x = 0; x < N; x++) {
+    var r = cells[y][x];
+    if (!r.land && (0.5 - r.h) < 0.10 && r.reef > 0.62) {
+      ctx.fillRect(X(x) - 1, Y(y) - 1, 2, 2);
+    }
+  }
+
+  /* land */
+  for (y = 0; y < N; y++) for (x = 0; x < N; x++) {
+    var l = cells[y][x];
+    if (!l.land) continue;
+    var v = (((x * 73 + y * 149) % 17) / 17 - 0.5) * 14;
+    ctx.fillStyle = shade(BIOMES[l.biome] || '#6f8f52', Math.round(v));
+    ctx.fillRect(X(x) - cell / 2, Y(y) - cell / 2, cell + 0.5, cell + 0.5);
+  }
+
+  /* contours + coastline */
+  contour(cells, 0.58, 'rgba(61,47,30,0.35)', 1);
+  contour(cells, 0.68, 'rgba(61,47,30,0.45)', 1);
+  contour(cells, 0.78, 'rgba(61,47,30,0.5)', 1);
+  contour(cells, 0.5, INK, 1.8);
+
+  /* rivers */
+  ctx.strokeStyle = '#41618a'; ctx.lineWidth = 1.8; ctx.lineCap = 'round';
+  isl.rivers.forEach(function (rv) {
+    ctx.beginPath();
+    rv.path.forEach(function (p, i) {
+      if (i === 0) ctx.moveTo(X(p.x), Y(p.y)); else ctx.lineTo(X(p.x), Y(p.y));
+    });
+    ctx.stroke();
+    if (rv.mouth === 'lake') {
+      var e = rv.path[rv.path.length - 1];
+      ctx.fillStyle = '#41618a';
+      ctx.beginPath(); ctx.arc(X(e.x), Y(e.y), 3.5, 0, Math.PI * 2); ctx.fill();
+    }
+  });
+
+  /* fauna sighting labels */
+  if (state.showLabels) {
+    ctx.font = 'italic 12px Georgia,serif'; ctx.fillStyle = INK;
+    sv.fauna.forEach(function (f, i) {
+      if (!f.spot) return;
+      var sx = X(f.spot.x), sy = Y(f.spot.y);
+      var lx = sx + 14, ly = sy - 12 - (i % 3) * 4;
+      ctx.strokeStyle = 'rgba(61,47,30,0.6)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(lx - 4, ly + 4); ctx.stroke();
+      ctx.fillText('\u2726 ' + f.common, lx, ly + 4);
+    });
+  }
+
+  /* graticule */
+  if (state.showGrat) {
+    ctx.strokeStyle = 'rgba(61,47,30,0.22)'; ctx.lineWidth = 1;
+    ctx.font = '11px Georgia,serif'; ctx.fillStyle = 'rgba(61,47,30,0.7)';
+    for (var g = 1; g < 10; g++) {
+      var gx = mapX + (mapS / 10) * g, gy = mapY + (mapS / 10) * g;
+      ctx.beginPath(); ctx.moveTo(gx, mapY); ctx.lineTo(gx, mapY + mapS); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(mapX, gy); ctx.lineTo(mapX + mapS, gy); ctx.stroke();
+    }
+    ctx.fillText(isl.latStr, mapX + 4, mapY + mapS + 16);
+    ctx.fillText(isl.lonStr, mapX + mapS - 52, mapY + mapS + 16);
+  }
+
+  /* cartouche */
+  ctx.fillStyle = INK;
+  ctx.font = 'italic 30px Georgia,serif';
+  ctx.fillText(isl.name, mapX, 44);
+  ctx.font = 'italic 14px Georgia,serif'; ctx.fillStyle = '#5a4527';
+  ctx.fillText('Phantom survey \u00B7 ' + isl.region, mapX, 66);
+  ctx.fillText('Last charted ' + isl.lastCharted + ' \u00B7 ' + isl.status + ' \u00B7 seed ' + isl.seed, mapX, 84);
+
+  /* compass rose */
+  var crx = mapX + mapS - 44, cry = mapY + 46;
+  ctx.strokeStyle = INK; ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.arc(crx, cry, 26, 0, Math.PI * 2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(crx, cry, 20, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = INK; ctx.font = 'italic 13px Georgia,serif'; ctx.textAlign = 'center';
+  ctx.fillText('N', crx, cry - 30);
+  ctx.beginPath();
+  ctx.moveTo(crx, cry - 18); ctx.lineTo(crx + 5, cry + 8); ctx.lineTo(crx, cry + 3); ctx.lineTo(crx - 5, cry + 8);
+  ctx.closePath(); ctx.fill();
+  ctx.textAlign = 'left';
+
+  /* scale bar */
+  var pxPerKm = mapS / isl.widthKm;
+  var steps = [1, 2, 5, 10, 20, 50, 100], barKm = 10;
+  for (var s = 0; s < steps.length; s++) {
+    if (steps[s] * pxPerKm > 50 && steps[s] * pxPerKm < 170) { barKm = steps[s]; break; }
+  }
+  var bx = mapX + 8, by = mapY + mapS - 18, bw = barKm * pxPerKm;
+  ctx.fillStyle = INK;
+  ctx.fillRect(bx, by, bw / 2, 5); ctx.strokeRect(bx, by, bw, 5);
+  ctx.font = '11px Georgia,serif';
+  ctx.fillText('0', bx, by + 18); ctx.fillText(barKm + ' km', bx + bw - 34, by + 18);
+
+  /* border + vignette */
+  ctx.strokeStyle = INK; ctx.lineWidth = 3; ctx.strokeRect(8, 8, 684, 684);
+  ctx.lineWidth = 1; ctx.strokeRect(16, 16, 668, 668);
+  var vg = ctx.createRadialGradient(350, 350, 240, 350, 350, 520);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, 'rgba(61,40,18,0.22)');
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, 700, 700);
+}
+
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function drawSide(sv) {
+  var isl = sv.island;
+  var html = '<h2>Chart particulars</h2><dl class="part">';
+  html += '<dt>Position</dt><dd>' + esc(isl.latStr) + ', ' + esc(isl.lonStr) + ' — ' + esc(isl.region) + '</dd>';
+  html += '<dt>Extent</dt><dd>' + isl.areaKm2 + ' km&sup2; of land, ' + isl.widthKm + ' km across</dd>';
+  html += '<dt>Elevation</dt><dd>' + isl.elevM + ' m ' + (isl.atoll ? '(a ring of sand — no watershed)' : '') + '</dd>';
+  html += '<dt>Rivers</dt><dd>' + (isl.rivers.length ? isl.rivers.map(function (r) {
+    return r.mouth === 'lake' ? 'one, ending in a crater lake' : 'one, reaching the sea';
+  }).join('; ') : 'none — no fresh water') + '</dd>';
+  html += '<dt>Status</dt><dd>' + esc(isl.status) + '</dd>';
+  html += '<dt>Seed</dt><dd>' + isl.seed + '</dd>';
+  html += '</dl>';
+
+  html += '<h2>Endemic fauna</h2><ul class="fauna">';
+  sv.fauna.forEach(function (f) {
+    html += '<li><span class="sci">' + esc(f.sci) + '</span> — ' + esc(f.common) +
+      '<br>' + esc(f.note) + '<br><span class="status">' + esc(f.status) + '</span></li>';
+  });
+  html += '</ul>';
+
+  html += '<h2>From the field books</h2><ul class="notes">';
+  sv.notes.forEach(function (n) {
+    html += '<li><span class="notedate">' + esc(n.date) + '.</span> ' + esc(n.text) + '</li>';
+  });
+  html += '</ul>';
+
+  html += '<h2>Expeditions</h2><ul class="hist">';
+  sv.history.forEach(function (h) { html += '<li>' + esc(h.text) + '</li>'; });
+  html += '</ul>';
+  document.getElementById('side').innerHTML = html;
+}
+
+function refresh() {
+  var sv = state.survey;
+  /* re-survey fauna against a shifted seed stream, island unchanged */
+  var fseed = (sv.island.seed + state.faunaEpoch * 7919) >>> 0;
+  var fauna = PhantomIsle.generateFauna(fseed, sv.island);
+  var history = PhantomIsle.generateHistory(fseed, sv.island, fauna);
+  var notes = PhantomIsle.generateNotes(fseed, sv.island, fauna);
+  var full = { island: sv.island, fauna: fauna, history: history, notes: notes };
+  drawChart(full);
+  drawSide(full);
+}
+
+function go(seed) {
+  seed = (seed >>> 0) || Math.floor(Math.random() * 1e9);
+  state.faunaEpoch = 0;
+  state.survey = PhantomIsle.survey(seed);
+  if (window.location.hash !== '#seed=' + seed) window.location.hash = '#seed=' + seed;
+  document.getElementById('seedInput').value = seed;
+  refresh();
+}
+
+document.getElementById('newIsle').addEventListener('click', function () {
+  var v = parseInt(document.getElementById('seedInput').value, 10);
+  go(isNaN(v) ? undefined : v);
+});
+document.getElementById('resurvey').addEventListener('click', function () {
+  state.faunaEpoch++;
+  refresh();
+});
+document.getElementById('tglLabels').addEventListener('change', function (e) {
+  state.showLabels = e.target.checked; refresh();
+});
+document.getElementById('tglGrat').addEventListener('change', function (e) {
+  state.showGrat = e.target.checked; refresh();
+});
+document.getElementById('savePng').addEventListener('click', function () {
+  var a = document.createElement('a');
+  a.download = 'phantom-isle-' + state.survey.island.seed + '.png';
+  a.href = canvas.toDataURL('image/png');
+  a.click();
+});
+window.addEventListener('hashchange', function () {
+  var m = window.location.hash.match(/#seed=(\d+)/);
+  if (m) go(parseInt(m[1], 10));
+});
+
+var init = window.location.hash.match(/#seed=(\d+)/);
+go(init ? parseInt(init[1], 10) : 20261009);
+})();
+</script>
+</body>
+</html>
