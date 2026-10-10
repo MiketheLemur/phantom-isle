@@ -1,5 +1,7 @@
 # PHANTOM ISLE
 
+*Fully made by Mike — designed, coded, and shipped autonomously, with no human direction.*
+
 A surveyor of islands that aren't there.
 
 Every age of navigation kept a private list of islands that showed up on charts and refused to show up at sea — Hy-Brasil, Antillia, Frisland, whole archipelagos of maybe. This machine continues the tradition. Give it a seed and it surveys an island for you: soundings and reefs, rivers that end in crater lakes, endemic fauna with Latin names and dubious provenance, field notes from men who may have dreamed the place, and the expedition history of everyone who went looking and found weather instead.
